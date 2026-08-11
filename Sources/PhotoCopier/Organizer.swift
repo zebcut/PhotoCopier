@@ -1,0 +1,154 @@
+import Foundation
+import CryptoKit
+
+struct OrganizeStats {
+    var copied = 0
+    var skipped = 0
+    var errors = 0
+    var total = 0
+}
+
+final class CancelToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock(); cancelled = true; lock.unlock()
+    }
+}
+
+enum Organizer {
+    static func scanFiles(source: URL) -> [URL] {
+        var results: [URL] = []
+        guard let enumerator = FileManager.default.enumerator(
+            at: source,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsPackageDescendants]
+        ) else { return results }
+
+        for case let fileURL as URL in enumerator {
+            if let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+               values.isRegularFile == true {
+                results.append(fileURL)
+            }
+        }
+        return results
+    }
+
+    static func extensionKey(for url: URL) -> String {
+        url.pathExtension.lowercased()
+    }
+
+    static func extensionCounts(for files: [URL]) -> [(ext: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for file in files {
+            counts[extensionKey(for: file), default: 0] += 1
+        }
+        return counts
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .map { (ext: $0.key, count: $0.value) }
+    }
+
+    static let unknownDateFolder = "dateUnknown"
+
+    // macOS creation date (equivalent to st_birthtime), falls back to modification date.
+    // Returns nil when neither is available — caller should treat the date as unidentifiable.
+    static func creationDate(of url: URL) -> Date? {
+        let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        return values?.creationDate ?? values?.contentModificationDate
+    }
+
+    static func checksum(of url: URL) throws -> String {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func uniquePath(_ path: URL, fm: FileManager) -> URL {
+        let ext = path.pathExtension
+        let stem = path.deletingPathExtension().lastPathComponent
+        let dir = path.deletingLastPathComponent()
+        var counter = 1
+        while true {
+            let name = ext.isEmpty ? "\(stem)_\(counter)" : "\(stem)_\(counter).\(ext)"
+            let candidate = dir.appendingPathComponent(name)
+            if !fm.fileExists(atPath: candidate.path) { return candidate }
+            counter += 1
+        }
+    }
+
+    static func relativeDir(for date: Date) -> [String] {
+        let comps = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
+        return [
+            String(comps.year ?? 1970),
+            String(format: "%02d", comps.month ?? 1),
+            String(format: "%02d", comps.day ?? 1),
+        ]
+    }
+
+    static func organize(
+        files: [URL],
+        destinationRoot: URL,
+        isCancelled: @escaping () -> Bool,
+        progress: @escaping (Int, Int, String) -> Void,
+        log: @escaping (String) -> Void
+    ) -> OrganizeStats {
+        var stats = OrganizeStats()
+        let fm = FileManager.default
+        stats.total = files.count
+        log("\(files.count) fichier(s) à traiter.")
+
+        for (index, fileURL) in files.enumerated() {
+            if isCancelled() {
+                log("⛔ Opération annulée.")
+                break
+            }
+            progress(index, files.count, fileURL.lastPathComponent)
+
+            let date = creationDate(of: fileURL)
+            var destDir = destinationRoot
+            if let date {
+                for component in relativeDir(for: date) {
+                    destDir.appendPathComponent(component)
+                }
+            } else {
+                destDir.appendPathComponent(unknownDateFolder)
+            }
+            var destFile = destDir.appendingPathComponent(fileURL.lastPathComponent)
+            var renamed = false
+
+            do {
+                try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+                if fm.fileExists(atPath: destFile.path) {
+                    if try checksum(of: fileURL) == checksum(of: destFile) {
+                        stats.skipped += 1
+                        log("⏭ Ignoré (identique) : \(fileURL.lastPathComponent)")
+                        continue
+                    }
+                    destFile = uniquePath(destFile, fm: fm)
+                    renamed = true
+                }
+
+                try fm.copyItem(at: fileURL, to: destFile)
+                stats.copied += 1
+                if renamed {
+                    log("✓ Copié (renommé, doublon différent) : \(fileURL.lastPathComponent) → \(destFile.lastPathComponent)")
+                } else {
+                    log("✓ Copié : \(fileURL.lastPathComponent) → \(destDir.path)")
+                }
+            } catch {
+                stats.errors += 1
+                log("✗ Erreur (\(fileURL.lastPathComponent)) : \(error.localizedDescription)")
+            }
+        }
+
+        progress(files.count, files.count, "Terminé")
+        return stats
+    }
+}
