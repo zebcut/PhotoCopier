@@ -42,13 +42,17 @@ Sources/PhotoCopier/
 - Date source priority, `Organizer.resolvedDate(of:)`: embedded capture metadata first
   (`Organizer.capturedDate(of:)` — EXIF `DateTimeOriginal`/`DateTimeDigitized`/TIFF `DateTime` via
   ImageIO for photos, QuickTime/MP4 `creationDate` via `AVURLAsset.load(.creationDate)` for
-  `videoExtensions`), falling back to `Organizer.creationDate(of:)` (filesystem `creationDate` →
-  `contentModificationDate`) when no metadata is embedded. **Do not revert to filesystem-date-only**:
-  real-world bug hit 2026-08-11 — a camera JPG's filesystem birthtime didn't match its EXIF date
-  (off by about a week, `2026/06/06` vs the correct `2026/05/30`) because the file had been
-  recopied/reformatted on the card before reaching PhotoCopier's source folder; EXIF stayed
-  correct because it's baked in at shooting time. `Organizer.organize` is `async` because of the
-  `AVURLAsset` metadata load.
+  `videoExtensions`), falling back to `Organizer.fileSystemDate(of:)` when no metadata is embedded.
+  **Do not revert to filesystem-date-only, and do not swap `fileSystemDate`'s internal priority
+  back to creation-date-first**: real-world bug hit 2026-08-11 — a camera JPG had gone through an
+  intermediate export/sync step before reaching PhotoCopier's source folder. That step preserved
+  the file's **modification** date (matched EXIF: 2026-05-30) but reset its **creation** date to
+  the moment of the export (2026-06-06, a filesystem-only artifact of the copy, not a real date).
+  The old code read creation date first and filed the photo under June. Fix has two layers:
+  1) EXIF/video metadata first (never touched by any copy), 2) when unavailable,
+  `fileSystemDate(of:)` now checks `contentModificationDate` before `creationDate` — copy/export
+  tools conventionally preserve mtime, rarely birthtime. `Organizer.organize` is `async` because
+  of the `AVURLAsset` metadata load.
 - All files copied recursively by default; after picking the source, the app scans it in the
   background and shows one checkbox per detected extension (all checked by default) — only
   checked extensions are copied

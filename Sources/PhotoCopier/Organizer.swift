@@ -101,11 +101,14 @@ enum Organizer {
         return exifDate(of: url)
     }
 
-    // macOS creation date (equivalent to st_birthtime), falls back to modification date.
-    // Returns nil when neither is available — caller should treat the date as unidentifiable.
-    static func creationDate(of url: URL) -> Date? {
+    // Filesystem date, used only when no embedded capture metadata is available. Modification
+    // date is checked first: copy/export/sync tools conventionally preserve it, while the
+    // creation date (st_birthtime) is usually reset to the moment of that copy — reading creation
+    // date first previously misfiled photos under the export date instead of the shooting date.
+    // Falls back to creation date, then nil if neither resource value is readable.
+    static func fileSystemDate(of url: URL) -> Date? {
         let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
-        return values?.creationDate ?? values?.contentModificationDate
+        return values?.contentModificationDate ?? values?.creationDate
     }
 
     // Best available date for sorting: embedded capture metadata first, filesystem date otherwise.
@@ -113,7 +116,7 @@ enum Organizer {
         if let captured = await capturedDate(of: url) {
             return captured
         }
-        return creationDate(of: url)
+        return fileSystemDate(of: url)
     }
 
     static func checksum(of url: URL) throws -> String {
