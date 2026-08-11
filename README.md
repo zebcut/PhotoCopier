@@ -1,12 +1,16 @@
 # PhotoCopier
 
 Application macOS native (SwiftUI) qui copie les fichiers d'une carte mémoire vers un disque en
-les classant automatiquement dans une arborescence `AAAA/MM/JJ` selon leur date de création.
+les classant automatiquement dans une arborescence `AAAA/MM/JJ` selon leur date de prise de vue.
 
 ## Fonctionnalités
 
-- Classement dans `AAAA/MM/JJ` d'après la date de création du fichier (équivalent `st_birthtime`),
-  avec repli sur la date de modification
+- Classement dans `AAAA/MM/JJ` d'après la date réelle de prise de vue, lue en priorité dans les
+  métadonnées du fichier lui-même (EXIF `DateTimeOriginal` pour les photos, date de création du
+  conteneur QuickTime/MP4 pour les vidéos) — plus fiable que la date de création sur le disque,
+  qui peut refléter une copie/export/synchro plutôt que la prise de vue réelle. Repli sur la date
+  de création du fichier (équivalent `st_birthtime`), puis la date de modification, si aucune
+  métadonnée n'est disponible
 - Création automatique des dossiers manquants
 - Après sélection de la source, scan et liste des extensions présentes sous forme de cases à
   cocher — seuls les types cochés sont copiés

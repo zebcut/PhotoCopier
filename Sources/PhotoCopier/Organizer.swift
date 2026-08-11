@@ -1,5 +1,7 @@
 import Foundation
 import CryptoKit
+import ImageIO
+import AVFoundation
 
 struct OrganizeStats {
     var copied = 0
@@ -56,11 +58,62 @@ enum Organizer {
 
     static let unknownDateFolder = "dateUnknown"
 
+    static let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "avi", "mts", "m2ts", "3gp"]
+
+    private static let exifDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    // Reads the shooting date embedded in image metadata (EXIF DateTimeOriginal, falling back
+    // to TIFF DateTime). Neither tag carries a timezone, so it's interpreted in the system's
+    // current timezone — the same assumption cameras make when they stamp local wall-clock time.
+    static func exifDate(of url: URL) -> Date? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else { return nil }
+
+        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        let raw = (exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
+            ?? (exif?[kCGImagePropertyExifDateTimeDigitized] as? String)
+            ?? (properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any])?[kCGImagePropertyTIFFDateTime] as? String
+
+        guard let raw else { return nil }
+        return exifDateFormatter.date(from: raw)
+    }
+
+    // Reads the capture date embedded in video container metadata (QuickTime/MP4 creation date).
+    static func videoCreationDate(of url: URL) async -> Date? {
+        guard let item = try? await AVURLAsset(url: url).load(.creationDate) else { return nil }
+        return try? await item.load(.dateValue)
+    }
+
+    // Metadata embedded in the file itself (EXIF for photos, container metadata for videos) —
+    // reflects the actual shooting date regardless of any later copy/export/sync that would
+    // otherwise reset the filesystem creation date.
+    static func capturedDate(of url: URL) async -> Date? {
+        if videoExtensions.contains(extensionKey(for: url)) {
+            return await videoCreationDate(of: url)
+        }
+        return exifDate(of: url)
+    }
+
     // macOS creation date (equivalent to st_birthtime), falls back to modification date.
     // Returns nil when neither is available — caller should treat the date as unidentifiable.
     static func creationDate(of url: URL) -> Date? {
         let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
         return values?.creationDate ?? values?.contentModificationDate
+    }
+
+    // Best available date for sorting: embedded capture metadata first, filesystem date otherwise.
+    static func resolvedDate(of url: URL) async -> Date? {
+        if let captured = await capturedDate(of: url) {
+            return captured
+        }
+        return creationDate(of: url)
     }
 
     static func checksum(of url: URL) throws -> String {
@@ -97,7 +150,7 @@ enum Organizer {
         isCancelled: @escaping () -> Bool,
         progress: @escaping (Int, Int, String) -> Void,
         log: @escaping (String) -> Void
-    ) -> OrganizeStats {
+    ) async -> OrganizeStats {
         var stats = OrganizeStats()
         let fm = FileManager.default
         stats.total = files.count
@@ -110,7 +163,7 @@ enum Organizer {
             }
             progress(index, files.count, fileURL.lastPathComponent)
 
-            let date = creationDate(of: fileURL)
+            let date = await resolvedDate(of: fileURL)
             var destDir = destinationRoot
             if let date {
                 for component in relativeDir(for: date) {

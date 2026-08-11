@@ -95,7 +95,7 @@ final class OrganizerViewModel: ObservableObject {
         cancelToken = token
 
         Task.detached(priority: .userInitiated) { [weak self] in
-            let stats = Organizer.organize(
+            let stats = await Organizer.organize(
                 files: filesToCopy,
                 destinationRoot: destURL,
                 isCancelled: { token.isCancelled },
